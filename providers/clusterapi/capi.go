@@ -4,6 +4,7 @@ import (
 	"context"
 	"flag"
 	"fmt"
+	"io/ioutil"
 	"time"
 
 	appsv1 "k8s.io/api/apps/v1"
@@ -21,7 +22,7 @@ import (
 	"k8s.io/client-go/scale"
 	"k8s.io/client-go/tools/clientcmd"
 	"k8s.io/kubernetes/test/e2e/framework"
-	"k8s.io/kubernetes/test/e2e/framework/auth"
+	e2edeployment "k8s.io/kubernetes/test/e2e/framework/deployment"
 	"k8s.io/utils/pointer"
 )
 
@@ -29,12 +30,18 @@ const autoscalerName = "cluster-autoscaler"
 
 var (
 	capiManagementKubeConfig = flag.String(fmt.Sprintf("%s-%s", "capi-management", clientcmd.RecommendedConfigPathFlag), "", "Path to kubeconfig containing embedded authinfo for CAPI management cluster.")
+	capiWorkloadKubeConfig   = flag.String(fmt.Sprintf("%s-%s", "capi-workload", clientcmd.RecommendedConfigPathFlag), "", "Path to kubeconfig containing embedded authinfo for CAPI workload cluster.")
 	capiManagementNamespace  = flag.String("capi-management-namespace", "default", "Namespace in which the scalable resources are located")
 	clusterAutoscalerImage   = flag.String("cluster-autoscaler-image", "", "Image to be used for the cluster autoscaler")
 
 	namespace = &v1.Namespace{
 		ObjectMeta: metav1.ObjectMeta{
 			GenerateName: autoscalerName + "-",
+		},
+	}
+	secret = &v1.Secret{
+		ObjectMeta: metav1.ObjectMeta{
+			Name: autoscalerName,
 		},
 	}
 	deployment = &appsv1.Deployment{
@@ -59,9 +66,14 @@ var (
 					Containers: []apiv1.Container{
 						{
 							Name:    autoscalerName,
-							Image:   "us.gcr.io/k8s-artifacts-prod/autoscaling/cluster-autoscaler:v1.18.1",
 							Command: []string{"/cluster-autoscaler"},
-							Args:    []string{"--cloud-provider=clusterapi"},
+							Args:    []string{"--cloud-provider=clusterapi", "--kubeconfig=/home/workload/kubeconfig.yml", "--clusterapi-cloud-config-authoritative"},
+							VolumeMounts: []v1.VolumeMount{
+								{
+									MountPath: "/home/workload",
+									Name:      "workload-kubeconfig",
+								},
+							},
 						},
 					},
 					Tolerations: []apiv1.Toleration{
@@ -71,6 +83,16 @@ var (
 						},
 					},
 					ServiceAccountName: autoscalerName,
+					Volumes: []v1.Volume{
+						{
+							Name: "workload-kubeconfig",
+							VolumeSource: v1.VolumeSource{
+								Secret: &v1.SecretVolumeSource{
+									SecretName: autoscalerName,
+								},
+							},
+						},
+					},
 				},
 			},
 		},
@@ -86,9 +108,24 @@ var (
 		},
 		Rules: []rbacv1.PolicyRule{
 			{
-				APIGroups: []string{""},
-				Verbs:     []string{"get", "list", "update", "watch", "create"},
-				Resources: []string{"persistentvolumeclaims", "persistentvolumes", "pods", "replicationcontrollers", "nodes", "pods/eviction"},
+				APIGroups: []string{rbacv1.APIGroupAll},
+				Verbs:     []string{rbacv1.VerbAll},
+				Resources: []string{rbacv1.ResourceAll},
+			},
+		},
+	}
+	clusterRoleBinding = &rbacv1.ClusterRoleBinding{
+		ObjectMeta: metav1.ObjectMeta{
+			GenerateName: autoscalerName + "-",
+		},
+		RoleRef: rbacv1.RoleRef{
+			APIGroup: "rbac.authorization.k8s.io",
+			Kind:     "ClusterRole",
+		},
+		Subjects: []rbacv1.Subject{
+			{
+				Kind: "ServiceAccount",
+				Name: autoscalerName,
 			},
 		},
 	}
@@ -163,6 +200,7 @@ func (p *Provider) FrameworkBeforeEach(f *framework.Framework) {
 	p.managementScaleClient = managementScaleClient
 	p.machineDeploymentClient = dynamicClient.Resource(p.gvr).Namespace(*capiManagementNamespace)
 	p.namespace = ns
+	deployment.Spec.Template.Spec.Containers[0].Image = *clusterAutoscalerImage
 }
 
 func (p *Provider) FrameworkAfterEach(f *framework.Framework) {
@@ -230,26 +268,43 @@ func (p *Provider) EnableAndDisableInternalLB() (enable func(svc *v1.Service), d
 }
 
 func (p *Provider) EnableAutoscaler(nodeGroup string, minSize int, maxSize int) error {
-	var err error
-	deployment, err = p.managementClient.AppsV1().Deployments(p.namespace.Name).Create(context.TODO(), deployment, metav1.CreateOptions{})
+	workloadKubeconfigBytes, err := ioutil.ReadFile(*capiWorkloadKubeConfig)
 	if err != nil {
 		return err
 	}
+
+	secret.Data = map[string][]byte{
+		"kubeconfig.yml": workloadKubeconfigBytes,
+	}
+
+	secret, err = p.managementClient.CoreV1().Secrets(p.namespace.Name).Create(context.TODO(), secret, metav1.CreateOptions{})
+	if err != nil {
+		return err
+	}
+
 	serviceAccount, err = p.managementClient.CoreV1().ServiceAccounts(p.namespace.Name).Create(context.TODO(), serviceAccount, metav1.CreateOptions{})
 	if err != nil {
 		return err
 	}
+
 	clusterRole, err = p.managementClient.RbacV1().ClusterRoles().Create(context.TODO(), clusterRole, metav1.CreateOptions{})
 	if err != nil {
 		return err
 	}
-	fmt.Println("!!!!!!!!", auth.IsRBACEnabled(p.managementClient.RbacV1()))
-	err = auth.BindClusterRoleInNamespace(p.managementClient.RbacV1(),
-		clusterRole.Name, p.namespace.Name, rbacv1.Subject{
-			Kind:      rbacv1.ServiceAccountKind,
-			Namespace: p.namespace.Name,
-			Name:      autoscalerName,
-		})
+
+	clusterRoleBinding.RoleRef.Name = clusterRole.Name
+	clusterRoleBinding.Subjects[0].Namespace = p.namespace.Name
+	clusterRoleBinding, err = p.managementClient.RbacV1().ClusterRoleBindings().Create(context.TODO(), clusterRoleBinding, metav1.CreateOptions{})
+	if err != nil {
+		return err
+	}
+
+	deployment, err = p.managementClient.AppsV1().Deployments(p.namespace.Name).Create(context.TODO(), deployment, metav1.CreateOptions{})
+	if err != nil {
+		return err
+	}
+
+	err = e2edeployment.WaitForDeploymentComplete(p.managementClient, deployment)
 	if err != nil {
 		return err
 	}
@@ -261,8 +316,7 @@ func (p *Provider) DisableAutoscaler(nodeGroup string) error {
 	if err := p.managementClient.RbacV1().ClusterRoles().Delete(context.TODO(), autoscalerName, metav1.DeleteOptions{}); err != nil {
 		return err
 	}
-	// return p.managementClient.AppsV1().Deployments(*capiManagementNamespace).Delete(context.TODO(), autoscalerName, metav1.DeleteOptions{})
-	return nil
+	return p.managementClient.AppsV1().Deployments(*capiManagementNamespace).Delete(context.TODO(), autoscalerName, metav1.DeleteOptions{})
 }
 
 func (p *Provider) WaitForReadyNodes(client kubernetes.Interface, timeout time.Duration) error {
