@@ -2,6 +2,7 @@ package clusterapi
 
 import (
 	"context"
+	"encoding/json"
 	"flag"
 	"fmt"
 	"io/ioutil"
@@ -13,6 +14,7 @@ import (
 	rbacv1 "k8s.io/api/rbac/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime/schema"
+	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/discovery"
 	"k8s.io/client-go/discovery/cached/memory"
 	"k8s.io/client-go/dynamic"
@@ -313,16 +315,42 @@ func (p *Provider) EnableAutoscaler(nodeGroup string, minSize int, maxSize int) 
 }
 
 func (p *Provider) DisableAutoscaler(nodeGroup string) error {
-	if err := p.managementClient.RbacV1().ClusterRoles().Delete(context.TODO(), autoscalerName, metav1.DeleteOptions{}); err != nil {
+	if err := p.managementClient.RbacV1().ClusterRoleBindings().Delete(context.TODO(), clusterRoleBinding.Name, metav1.DeleteOptions{}); err != nil {
 		return err
 	}
-	return p.managementClient.AppsV1().Deployments(*capiManagementNamespace).Delete(context.TODO(), autoscalerName, metav1.DeleteOptions{})
+	return p.managementClient.RbacV1().ClusterRoles().Delete(context.TODO(), clusterRole.Name, metav1.DeleteOptions{})
 }
 
 func (p *Provider) WaitForReadyNodes(client kubernetes.Interface, timeout time.Duration) error {
 	panic("not implemented") // TODO: Implement
 }
 
-func (p *Provider) ResetInstanceGroups() error {
-	panic("not implemented") // TODO: Implement
+type patchUInt32Value struct {
+	Op    string `json:"op"`
+	Path  string `json:"path"`
+	Value uint32 `json:"value"`
+}
+
+func (p *Provider) ResetInstanceGroups(instanceGroups map[string]int) error {
+	for group, scale := range instanceGroups {
+		unstructuredResource, err := p.machineDeploymentClient.Get(context.TODO(), group, metav1.GetOptions{})
+		if err != nil {
+			return err
+		}
+
+		payload := []patchUInt32Value{{
+			Op:    "replace",
+			Path:  "/spec/replicas",
+			Value: uint32(scale),
+		}}
+		payloadBytes, _ := json.Marshal(payload)
+
+		_, err = p.managementScaleClient.Scales(unstructuredResource.GetNamespace()).
+			Patch(context.TODO(), p.gvr, unstructuredResource.GetName(), types.JSONPatchType, payloadBytes, metav1.PatchOptions{})
+		if err != nil {
+			return err
+		}
+	}
+
+	return nil
 }

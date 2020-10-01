@@ -12,5 +12,5 @@ type Provider interface {
 	EnableAutoscaler(nodeGroup string, minSize, maxSize int) error
 	DisableAutoscaler(nodeGroup string) error
 	WaitForReadyNodes(client kubernetes.Interface, timeout time.Duration) error
-	ResetInstanceGroups() error
+	ResetInstanceGroups(map[string]int) error
 }

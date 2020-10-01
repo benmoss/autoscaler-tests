@@ -103,7 +103,7 @@ var _ = ginkgo.Describe("Cluster size autoscaler scalability [Slow]", func() {
 		framework.ExpectNoError(provider.DisableAutoscaler("default-pool"))
 
 		ginkgo.By("Restoring initial size of the cluster")
-		framework.ExpectNoError(provider.ResetInstanceGroups())
+		framework.ExpectNoError(provider.ResetInstanceGroups(originalSizes))
 	})
 
 	ginkgo.It("should scale up at all [Feature:ClusterAutoscalerScalability1]", func() {
