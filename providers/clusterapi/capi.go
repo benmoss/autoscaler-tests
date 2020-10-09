@@ -35,102 +35,6 @@ var (
 	capiWorkloadKubeConfig   = flag.String(fmt.Sprintf("%s-%s", "capi-workload", clientcmd.RecommendedConfigPathFlag), "", "Path to kubeconfig containing embedded authinfo for CAPI workload cluster.")
 	capiManagementNamespace  = flag.String("capi-management-namespace", "default", "Namespace in which the scalable resources are located")
 	clusterAutoscalerImage   = flag.String("cluster-autoscaler-image", "", "Image to be used for the cluster autoscaler")
-
-	namespace = &v1.Namespace{
-		ObjectMeta: metav1.ObjectMeta{
-			GenerateName: autoscalerName + "-",
-		},
-	}
-	secret = &v1.Secret{
-		ObjectMeta: metav1.ObjectMeta{
-			Name: autoscalerName,
-		},
-	}
-	deployment = &appsv1.Deployment{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:   autoscalerName,
-			Labels: map[string]string{"app": autoscalerName},
-		},
-		Spec: appsv1.DeploymentSpec{
-			Replicas: pointer.Int32Ptr(1),
-			Selector: &metav1.LabelSelector{
-				MatchLabels: map[string]string{
-					"app": autoscalerName,
-				},
-			},
-			Template: apiv1.PodTemplateSpec{
-				ObjectMeta: metav1.ObjectMeta{
-					Labels: map[string]string{
-						"app": autoscalerName,
-					},
-				},
-				Spec: apiv1.PodSpec{
-					Containers: []apiv1.Container{
-						{
-							Name:    autoscalerName,
-							Command: []string{"/cluster-autoscaler"},
-							Args:    []string{"--cloud-provider=clusterapi", "--kubeconfig=/home/workload/kubeconfig.yml", "--clusterapi-cloud-config-authoritative"},
-							VolumeMounts: []v1.VolumeMount{
-								{
-									MountPath: "/home/workload",
-									Name:      "workload-kubeconfig",
-								},
-							},
-						},
-					},
-					Tolerations: []apiv1.Toleration{
-						{
-							Key:    "node-role.kubernetes.io/master",
-							Effect: apiv1.TaintEffectNoSchedule,
-						},
-					},
-					ServiceAccountName: autoscalerName,
-					Volumes: []v1.Volume{
-						{
-							Name: "workload-kubeconfig",
-							VolumeSource: v1.VolumeSource{
-								Secret: &v1.SecretVolumeSource{
-									SecretName: autoscalerName,
-								},
-							},
-						},
-					},
-				},
-			},
-		},
-	}
-	serviceAccount = &apiv1.ServiceAccount{
-		ObjectMeta: metav1.ObjectMeta{
-			Name: autoscalerName,
-		},
-	}
-	clusterRole = &rbacv1.ClusterRole{
-		ObjectMeta: metav1.ObjectMeta{
-			GenerateName: autoscalerName + "-",
-		},
-		Rules: []rbacv1.PolicyRule{
-			{
-				APIGroups: []string{rbacv1.APIGroupAll},
-				Verbs:     []string{rbacv1.VerbAll},
-				Resources: []string{rbacv1.ResourceAll},
-			},
-		},
-	}
-	clusterRoleBinding = &rbacv1.ClusterRoleBinding{
-		ObjectMeta: metav1.ObjectMeta{
-			GenerateName: autoscalerName + "-",
-		},
-		RoleRef: rbacv1.RoleRef{
-			APIGroup: "rbac.authorization.k8s.io",
-			Kind:     "ClusterRole",
-		},
-		Subjects: []rbacv1.Subject{
-			{
-				Kind: "ServiceAccount",
-				Name: autoscalerName,
-			},
-		},
-	}
 )
 
 func init() {
@@ -151,6 +55,8 @@ type Provider struct {
 	managementScaleClient   scale.ScalesGetter
 	gvr                     schema.GroupVersionResource
 	namespace               *v1.Namespace
+	clusterRole             *rbacv1.ClusterRole
+	clusterRoleBinding      *rbacv1.ClusterRoleBinding
 }
 
 func (p *Provider) FrameworkBeforeEach(f *framework.Framework) {
@@ -196,13 +102,17 @@ func (p *Provider) FrameworkBeforeEach(f *framework.Framework) {
 		scale.NewDiscoveryScaleKindResolver(discoveryClient))
 	framework.ExpectNoError(err)
 
+	namespace := &v1.Namespace{
+		ObjectMeta: metav1.ObjectMeta{
+			GenerateName: autoscalerName + "-",
+		},
+	}
 	ns, err := p.managementClient.CoreV1().Namespaces().Create(context.TODO(), namespace, metav1.CreateOptions{})
 	framework.ExpectNoError(err)
 
 	p.managementScaleClient = managementScaleClient
 	p.machineDeploymentClient = dynamicClient.Resource(p.gvr).Namespace(*capiManagementNamespace)
 	p.namespace = ns
-	deployment.Spec.Template.Spec.Containers[0].Image = *clusterAutoscalerImage
 }
 
 func (p *Provider) FrameworkAfterEach(f *framework.Framework) {
@@ -270,55 +180,148 @@ func (p *Provider) EnableAndDisableInternalLB() (enable func(svc *v1.Service), d
 }
 
 func (p *Provider) EnableAutoscaler(nodeGroup string, minSize int, maxSize int) error {
+	deployment := &appsv1.Deployment{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:   autoscalerName,
+			Labels: map[string]string{"app": autoscalerName},
+		},
+		Spec: appsv1.DeploymentSpec{
+			Replicas: pointer.Int32Ptr(1),
+			Selector: &metav1.LabelSelector{
+				MatchLabels: map[string]string{
+					"app": autoscalerName,
+				},
+			},
+			Template: apiv1.PodTemplateSpec{
+				ObjectMeta: metav1.ObjectMeta{
+					Labels: map[string]string{
+						"app": autoscalerName,
+					},
+				},
+				Spec: apiv1.PodSpec{
+					Containers: []apiv1.Container{
+						{
+							Name:    autoscalerName,
+							Image:   *clusterAutoscalerImage,
+							Command: []string{"/cluster-autoscaler"},
+							Args:    []string{"--cloud-provider=clusterapi", "--kubeconfig=/home/workload/kubeconfig.yml", "--clusterapi-cloud-config-authoritative"},
+							VolumeMounts: []v1.VolumeMount{
+								{
+									MountPath: "/home/workload",
+									Name:      "workload-kubeconfig",
+								},
+							},
+						},
+					},
+					Tolerations: []apiv1.Toleration{
+						{
+							Key:    "node-role.kubernetes.io/master",
+							Effect: apiv1.TaintEffectNoSchedule,
+						},
+					},
+					ServiceAccountName: autoscalerName,
+					Volumes: []v1.Volume{
+						{
+							Name: "workload-kubeconfig",
+							VolumeSource: v1.VolumeSource{
+								Secret: &v1.SecretVolumeSource{
+									SecretName: autoscalerName,
+								},
+							},
+						},
+					},
+				},
+			},
+		},
+	}
+	serviceAccount := &apiv1.ServiceAccount{
+		ObjectMeta: metav1.ObjectMeta{
+			Name: autoscalerName,
+		},
+	}
+	p.clusterRole = &rbacv1.ClusterRole{
+		ObjectMeta: metav1.ObjectMeta{
+			GenerateName: autoscalerName + "-",
+		},
+		Rules: []rbacv1.PolicyRule{
+			{
+				APIGroups: []string{rbacv1.APIGroupAll},
+				Verbs:     []string{rbacv1.VerbAll},
+				Resources: []string{rbacv1.ResourceAll},
+			},
+		},
+	}
 	workloadKubeconfigBytes, err := ioutil.ReadFile(*capiWorkloadKubeConfig)
 	if err != nil {
 		return err
 	}
 
-	secret.Data = map[string][]byte{
-		"kubeconfig.yml": workloadKubeconfigBytes,
+	secret := &v1.Secret{
+		ObjectMeta: metav1.ObjectMeta{
+			Name: autoscalerName,
+		},
+		Data: map[string][]byte{
+			"kubeconfig.yml": workloadKubeconfigBytes,
+		},
 	}
 
-	secret, err = p.managementClient.CoreV1().Secrets(p.namespace.Name).Create(context.TODO(), secret, metav1.CreateOptions{})
+	_, err = p.managementClient.CoreV1().Secrets(p.namespace.Name).Create(context.TODO(), secret, metav1.CreateOptions{})
 	if err != nil {
-		return err
+		return fmt.Errorf("err creating secret: %w", err)
 	}
 
-	serviceAccount, err = p.managementClient.CoreV1().ServiceAccounts(p.namespace.Name).Create(context.TODO(), serviceAccount, metav1.CreateOptions{})
+	_, err = p.managementClient.CoreV1().ServiceAccounts(p.namespace.Name).Create(context.TODO(), serviceAccount, metav1.CreateOptions{})
 	if err != nil {
-		return err
+		return fmt.Errorf("err creating serviceaccount: %w", err)
 	}
 
-	clusterRole, err = p.managementClient.RbacV1().ClusterRoles().Create(context.TODO(), clusterRole, metav1.CreateOptions{})
+	clusterRole, err := p.managementClient.RbacV1().ClusterRoles().Create(context.TODO(), p.clusterRole, metav1.CreateOptions{})
 	if err != nil {
-		return err
+		return fmt.Errorf("err creating clusterole: %w", err)
 	}
+	p.clusterRole = clusterRole
 
-	clusterRoleBinding.RoleRef.Name = clusterRole.Name
-	clusterRoleBinding.Subjects[0].Namespace = p.namespace.Name
-	clusterRoleBinding, err = p.managementClient.RbacV1().ClusterRoleBindings().Create(context.TODO(), clusterRoleBinding, metav1.CreateOptions{})
-	if err != nil {
-		return err
+	p.clusterRoleBinding = &rbacv1.ClusterRoleBinding{
+		ObjectMeta: metav1.ObjectMeta{
+			GenerateName: autoscalerName + "-",
+		},
+		RoleRef: rbacv1.RoleRef{
+			APIGroup: "rbac.authorization.k8s.io",
+			Kind:     "ClusterRole",
+			Name:     clusterRole.Name,
+		},
+		Subjects: []rbacv1.Subject{
+			{
+				Kind:      "ServiceAccount",
+				Name:      autoscalerName,
+				Namespace: p.namespace.Name,
+			},
+		},
 	}
+	clusterRoleBinding, err := p.managementClient.RbacV1().ClusterRoleBindings().Create(context.TODO(), p.clusterRoleBinding, metav1.CreateOptions{})
+	if err != nil {
+		return fmt.Errorf("err creating clusterrolebinding: %w", err)
+	}
+	p.clusterRoleBinding = clusterRoleBinding
 
 	deployment, err = p.managementClient.AppsV1().Deployments(p.namespace.Name).Create(context.TODO(), deployment, metav1.CreateOptions{})
 	if err != nil {
-		return err
+		return fmt.Errorf("err creating deployment: %w", err)
 	}
 
 	err = e2edeployment.WaitForDeploymentComplete(p.managementClient, deployment)
 	if err != nil {
-		return err
+		return fmt.Errorf("err waiting for deployment to complete: %w", err)
 	}
 
 	return nil
 }
 
 func (p *Provider) DisableAutoscaler(nodeGroup string) error {
-	if err := p.managementClient.RbacV1().ClusterRoleBindings().Delete(context.TODO(), clusterRoleBinding.Name, metav1.DeleteOptions{}); err != nil {
+	if err := p.managementClient.RbacV1().ClusterRoleBindings().Delete(context.TODO(), p.clusterRoleBinding.Name, metav1.DeleteOptions{}); err != nil {
 		return err
 	}
-	return p.managementClient.RbacV1().ClusterRoles().Delete(context.TODO(), clusterRole.Name, metav1.DeleteOptions{})
+	return p.managementClient.RbacV1().ClusterRoles().Delete(context.TODO(), p.clusterRole.Name, metav1.DeleteOptions{})
 }
 
 func (p *Provider) WaitForReadyNodes(client kubernetes.Interface, timeout time.Duration) error {
