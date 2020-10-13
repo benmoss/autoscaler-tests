@@ -2,19 +2,16 @@ package clusterapi
 
 import (
 	"context"
-	"encoding/json"
 	"flag"
 	"fmt"
 	"io/ioutil"
-	"time"
 
 	appsv1 "k8s.io/api/apps/v1"
-	apiv1 "k8s.io/api/core/v1"
+	autoscalingapi "k8s.io/api/autoscaling/v1"
 	v1 "k8s.io/api/core/v1"
 	rbacv1 "k8s.io/api/rbac/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime/schema"
-	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/discovery"
 	"k8s.io/client-go/discovery/cached/memory"
 	"k8s.io/client-go/dynamic"
@@ -121,7 +118,20 @@ func (p *Provider) FrameworkAfterEach(f *framework.Framework) {
 }
 
 func (p *Provider) ResizeGroup(group string, size int32) error {
-	panic("not implemented") // TODO: Implement
+	unstructuredResource, err := p.machineDeploymentClient.Get(context.TODO(), group, metav1.GetOptions{})
+	if err != nil {
+		return err
+	}
+
+	_, err = p.managementScaleClient.Scales(unstructuredResource.GetNamespace()).
+		Update(context.TODO(), p.gvr.GroupResource(), &autoscalingapi.Scale{
+			Spec: autoscalingapi.ScaleSpec{Replicas: size},
+			ObjectMeta: metav1.ObjectMeta{
+				Name: unstructuredResource.GetName(),
+			},
+		}, metav1.UpdateOptions{})
+
+	return err
 }
 
 func (p *Provider) GetGroupNodes(group string) ([]string, error) {
@@ -143,42 +153,6 @@ func (p *Provider) GroupSize(group string) (int, error) {
 	return int(scalableResource.Spec.Replicas), nil
 }
 
-func (p *Provider) DeleteNode(node *v1.Node) error {
-	panic("not implemented") // TODO: Implement
-}
-
-func (p *Provider) CreatePD(zone string) (string, error) {
-	panic("not implemented") // TODO: Implement
-}
-
-func (p *Provider) DeletePD(pdName string) error {
-	panic("not implemented") // TODO: Implement
-}
-
-func (p *Provider) CreatePVSource(zone string, diskName string) (*v1.PersistentVolumeSource, error) {
-	panic("not implemented") // TODO: Implement
-}
-
-func (p *Provider) DeletePVSource(pvSource *v1.PersistentVolumeSource) error {
-	panic("not implemented") // TODO: Implement
-}
-
-func (p *Provider) CleanupServiceResources(c kubernetes.Interface, loadBalancerName string, region string, zone string) {
-	panic("not implemented") // TODO: Implement
-}
-
-func (p *Provider) EnsureLoadBalancerResourcesDeleted(ip string, portRange string) error {
-	panic("not implemented") // TODO: Implement
-}
-
-func (p *Provider) LoadBalancerSrcRanges() []string {
-	panic("not implemented") // TODO: Implement
-}
-
-func (p *Provider) EnableAndDisableInternalLB() (enable func(svc *v1.Service), disable func(svc *v1.Service)) {
-	panic("not implemented") // TODO: Implement
-}
-
 func (p *Provider) EnableAutoscaler(nodeGroup string, minSize int, maxSize int) error {
 	deployment := &appsv1.Deployment{
 		ObjectMeta: metav1.ObjectMeta{
@@ -192,19 +166,28 @@ func (p *Provider) EnableAutoscaler(nodeGroup string, minSize int, maxSize int) 
 					"app": autoscalerName,
 				},
 			},
-			Template: apiv1.PodTemplateSpec{
+			Template: v1.PodTemplateSpec{
 				ObjectMeta: metav1.ObjectMeta{
 					Labels: map[string]string{
 						"app": autoscalerName,
 					},
 				},
-				Spec: apiv1.PodSpec{
-					Containers: []apiv1.Container{
+				Spec: v1.PodSpec{
+					Containers: []v1.Container{
 						{
 							Name:    autoscalerName,
 							Image:   *clusterAutoscalerImage,
 							Command: []string{"/cluster-autoscaler"},
-							Args:    []string{"--cloud-provider=clusterapi", "--kubeconfig=/home/workload/kubeconfig.yml", "--clusterapi-cloud-config-authoritative"},
+							Args: []string{
+								"--cloud-provider=clusterapi",
+								"--kubeconfig=/home/workload/kubeconfig.yml",
+								"--clusterapi-cloud-config-authoritative",
+								"--scale-down-delay-after-add=30s",
+								"--scale-down-delay-after-failure=30s",
+								"--scale-down-unneeded-time=1m",
+								"--scale-down-unready-time=30s",
+								"--scan-interval=1s",
+							},
 							VolumeMounts: []v1.VolumeMount{
 								{
 									MountPath: "/home/workload",
@@ -213,10 +196,10 @@ func (p *Provider) EnableAutoscaler(nodeGroup string, minSize int, maxSize int) 
 							},
 						},
 					},
-					Tolerations: []apiv1.Toleration{
+					Tolerations: []v1.Toleration{
 						{
 							Key:    "node-role.kubernetes.io/master",
-							Effect: apiv1.TaintEffectNoSchedule,
+							Effect: v1.TaintEffectNoSchedule,
 						},
 					},
 					ServiceAccountName: autoscalerName,
@@ -234,7 +217,7 @@ func (p *Provider) EnableAutoscaler(nodeGroup string, minSize int, maxSize int) 
 			},
 		},
 	}
-	serviceAccount := &apiv1.ServiceAccount{
+	serviceAccount := &v1.ServiceAccount{
 		ObjectMeta: metav1.ObjectMeta{
 			Name: autoscalerName,
 		},
@@ -324,36 +307,38 @@ func (p *Provider) DisableAutoscaler(nodeGroup string) error {
 	return p.managementClient.RbacV1().ClusterRoles().Delete(context.TODO(), p.clusterRole.Name, metav1.DeleteOptions{})
 }
 
-func (p *Provider) WaitForReadyNodes(client kubernetes.Interface, timeout time.Duration) error {
+func (p *Provider) DeleteNode(node *v1.Node) error {
 	panic("not implemented") // TODO: Implement
 }
 
-type patchUInt32Value struct {
-	Op    string `json:"op"`
-	Path  string `json:"path"`
-	Value uint32 `json:"value"`
+func (p *Provider) CreatePD(zone string) (string, error) {
+	panic("not implemented") // TODO: Implement
 }
 
-func (p *Provider) ResetInstanceGroups(instanceGroups map[string]int) error {
-	for group, scale := range instanceGroups {
-		unstructuredResource, err := p.machineDeploymentClient.Get(context.TODO(), group, metav1.GetOptions{})
-		if err != nil {
-			return err
-		}
+func (p *Provider) DeletePD(pdName string) error {
+	panic("not implemented") // TODO: Implement
+}
 
-		payload := []patchUInt32Value{{
-			Op:    "replace",
-			Path:  "/spec/replicas",
-			Value: uint32(scale),
-		}}
-		payloadBytes, _ := json.Marshal(payload)
+func (p *Provider) CreatePVSource(zone string, diskName string) (*v1.PersistentVolumeSource, error) {
+	panic("not implemented") // TODO: Implement
+}
 
-		_, err = p.managementScaleClient.Scales(unstructuredResource.GetNamespace()).
-			Patch(context.TODO(), p.gvr, unstructuredResource.GetName(), types.JSONPatchType, payloadBytes, metav1.PatchOptions{})
-		if err != nil {
-			return err
-		}
-	}
+func (p *Provider) DeletePVSource(pvSource *v1.PersistentVolumeSource) error {
+	panic("not implemented") // TODO: Implement
+}
 
-	return nil
+func (p *Provider) CleanupServiceResources(c kubernetes.Interface, loadBalancerName string, region string, zone string) {
+	panic("not implemented") // TODO: Implement
+}
+
+func (p *Provider) EnsureLoadBalancerResourcesDeleted(ip string, portRange string) error {
+	panic("not implemented") // TODO: Implement
+}
+
+func (p *Provider) LoadBalancerSrcRanges() []string {
+	panic("not implemented") // TODO: Implement
+}
+
+func (p *Provider) EnableAndDisableInternalLB() (enable func(svc *v1.Service), disable func(svc *v1.Service)) {
+	panic("not implemented") // TODO: Implement
 }
