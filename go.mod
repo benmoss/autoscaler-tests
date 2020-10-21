@@ -30,21 +30,11 @@ replace (
 )
 
 require (
-	github.com/blang/semver v3.5.1+incompatible // indirect
-	github.com/golang/groupcache v0.0.0-20200121045136-8c9f03a8e57e // indirect
-	github.com/google/go-cmp v0.4.1 // indirect
-	github.com/hashicorp/golang-lru v0.5.4 // indirect
-	github.com/imdario/mergo v0.3.9 // indirect
-	github.com/onsi/ginkgo v1.12.1
-	github.com/onsi/gomega v1.10.1
-	github.com/opencontainers/go-digest v1.0.0 // indirect
-	golang.org/x/oauth2 v0.0.0-20200107190931-bf48bf16ab8d // indirect
-	google.golang.org/appengine v1.6.6 // indirect
+	github.com/sclevine/spec v1.4.0
+	github.com/stretchr/testify v1.4.0
 	k8s.io/api v0.19.2
 	k8s.io/apimachinery v0.19.2
 	k8s.io/client-go v0.19.2
-	k8s.io/klog v1.0.0
-	k8s.io/klog/v2 v2.2.0
 	k8s.io/kubernetes v1.19.2
 	k8s.io/utils v0.0.0-20200729134348-d5654de09c73
 )
