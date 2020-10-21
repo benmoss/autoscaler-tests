@@ -1,20 +1,19 @@
-package autoscaling
+package test
 
 import (
 	"testing"
 
 	v1 "k8s.io/api/core/v1"
 	clientset "k8s.io/client-go/kubernetes"
-	restclient "k8s.io/client-go/rest"
+	"k8s.io/client-go/tools/clientcmd"
 )
 
 type Framework struct {
-	Namespace      *v1.Namespace
-	ClientSet      clientset.Interface
-	ClientConfig   *restclient.Config
-	Provider       Provider
-	T              *testing.T
-	KubeconfigPath string
+	ClientConfig clientcmd.ClientConfig
+	ClientSet    clientset.Interface
+	Namespace    *v1.Namespace
+	Provider     Provider
+	T            *testing.T
 }
 
 type Provider interface {

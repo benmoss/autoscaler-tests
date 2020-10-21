@@ -31,10 +31,11 @@ replace (
 
 require (
 	github.com/sclevine/spec v1.4.0
-	github.com/stretchr/testify v1.4.0
+	github.com/stretchr/testify v1.5.1
 	k8s.io/api v0.19.2
 	k8s.io/apimachinery v0.19.2
 	k8s.io/client-go v0.19.2
 	k8s.io/kubernetes v1.19.2
 	k8s.io/utils v0.0.0-20200729134348-d5654de09c73
+	sigs.k8s.io/kubetest2 v0.0.0-20201014184750-e76a9103dbc3
 )

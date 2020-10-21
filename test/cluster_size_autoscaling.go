@@ -14,7 +14,7 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
-package autoscaling
+package test
 
 import (
 	"context"
@@ -70,27 +70,31 @@ func ClusterAutoscalerSuite(t *testing.T, provider Provider) {
 			memAllocatableMb int
 			originalSizes    map[string]int
 			f                = &Framework{
-				T:              t,
-				KubeconfigPath: *kubeconfig,
-				Provider:       provider,
+				T:        t,
+				Provider: provider,
 			}
 		)
 
 		it.Before(func() {
-			config, err := clientcmd.BuildConfigFromFlags("", *kubeconfig)
-			require.NoError(t, err)
-			f.ClientConfig = config
+			loadingRules := clientcmd.NewDefaultClientConfigLoadingRules()
+			if kubeconfig != nil {
+				loadingRules.ExplicitPath = *kubeconfig
+			}
 
-			c, err := clientset.NewForConfig(config)
+			f.ClientConfig = clientcmd.NewNonInteractiveDeferredLoadingClientConfig(loadingRules, &clientcmd.ConfigOverrides{})
+
+			config, err := f.ClientConfig.ClientConfig()
 			require.NoError(t, err)
-			f.ClientSet = c
+
+			f.ClientSet, err = clientset.NewForConfig(config)
+			require.NoError(t, err)
 
 			namespace := &v1.Namespace{
 				ObjectMeta: metav1.ObjectMeta{
 					GenerateName: "autoscaling-",
 				},
 			}
-			ns, err := c.CoreV1().Namespaces().Create(context.TODO(), namespace, metav1.CreateOptions{})
+			ns, err := f.ClientSet.CoreV1().Namespaces().Create(context.TODO(), namespace, metav1.CreateOptions{})
 			require.NoError(t, err)
 			f.Namespace = ns
 
@@ -106,9 +110,9 @@ func ClusterAutoscalerSuite(t *testing.T, provider Provider) {
 				sum += size
 			}
 			// Give instances time to spin up
-			require.NoError(t, e2enode.WaitForReadyNodes(c, sum, scaleUpTimeout))
+			require.NoError(t, e2enode.WaitForReadyNodes(f.ClientSet, sum, scaleUpTimeout))
 
-			nodes, err := e2enode.GetReadySchedulableNodes(c)
+			nodes, err := e2enode.GetReadySchedulableNodes(f.ClientSet)
 			require.NoError(t, err)
 			nodeCount = len(nodes.Items)
 			t.Logf("Initial number of schedulable nodes: %v", nodeCount)
