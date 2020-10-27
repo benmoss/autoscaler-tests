@@ -109,6 +109,15 @@ func reserveMemory(f *Framework, id string, replicas, megabytes int, expectRunni
 	return nil
 }
 
+func ReserveMemoryAsync(f *Framework, id string, replicas, megabytes int, expectRunning bool, timeout time.Duration) <-chan int {
+	done := make(chan int)
+	go func() {
+		reserveMemory(f, id, replicas, megabytes, expectRunning, timeout, nil, nil, "")
+		close(done)
+	}()
+	return done
+}
+
 // ReserveMemoryWithPriority creates a replication controller with pods with priority that, in summation,
 // request the specified amount of memory.
 func ReserveMemoryWithPriority(f *Framework, id string, replicas, megabytes int, expectRunning bool, timeout time.Duration, priorityClassName string) func() error {

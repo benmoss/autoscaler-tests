@@ -189,7 +189,7 @@ func ClusterAutoscalerSuite(t *testing.T, provider Provider) {
 		})
 
 		simpleScaleUpTest := func(unready int) {
-			ReserveMemory(f, "memory-reservation", 100, int(1.1*float64(nodeCount*memAllocatableMb)), false, 1*time.Second)
+			ReserveMemoryAsync(f, "memory-reservation", 100, int(1.1*float64(nodeCount*memAllocatableMb)), false, 1*time.Second)
 			defer e2erc.DeleteRCAndWaitForGC(f.ClientSet, f.Namespace.Name, "memory-reservation")
 
 			// Verify that cluster size is increased
@@ -211,7 +211,7 @@ func ClusterAutoscalerSuite(t *testing.T, provider Provider) {
 			unmanagedNodes := nodeCount - status.ready
 
 			t.Log("Schedule more pods than can fit and wait for cluster to scale-up")
-			ReserveMemory(f, "memory-reservation", 100, nodeCount*memAllocatableMb, false, 1*time.Second)
+			ReserveMemoryAsync(f, "memory-reservation", 100, nodeCount*memAllocatableMb, false, 1*time.Second)
 			defer e2erc.DeleteRCAndWaitForGC(f.ClientSet, f.Namespace.Name, "memory-reservation")
 
 			status, err = waitForScaleUpStatus(f, func(s *scaleUpStatus) bool {
